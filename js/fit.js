@@ -46,6 +46,11 @@ export function fitFromMessages(messages) {
     };
   });
   const session = messages.sessionMesgs?.[0] || {};
+  // ラップ開始時刻（撮影中にラップボタンを押せば、動画との同期の目印になる）
+  const laps = (messages.lapMesgs || [])
+    .map((l, i) => ({ index: i + 1, t: (new Date(l.startTime ?? l.timestamp).getTime() - t0) / 1000, durationSec: num(l.totalElapsedTime) }))
+    .filter((l) => Number.isFinite(l.t))
+    .sort((a, b) => a.t - b.t);
   const has = (k) => records.some((r) => r[k] != null && r[k] > 0);
   return {
     startTime: new Date(t0),
@@ -54,6 +59,7 @@ export function fitFromMessages(messages) {
     durationSec: records.at(-1).t,
     totalDistanceM: num(session.totalDistance) ?? records.at(-1).dist,
     records,
+    laps,
     available: {
       hr: has('hr'), cadence: has('spm'), speed: has('speed'), power: has('power'),
       dynamics: has('voMm') || has('gctMs'),
@@ -98,4 +104,14 @@ export function summarizeWindow(fit, fromSec = 0, toSec = Infinity) {
     powerW: round(med(rs.map((r) => r.power))),
     samples: rs.length,
   };
+}
+
+// 指定時刻（アクティビティ開始からの秒）に最も近い記録（±3秒以内）
+export function recordAt(fit, t) {
+  const rs = fit.records;
+  if (!rs.length || t < rs[0].t - 3 || t > rs.at(-1).t + 3) return null;
+  let lo = 0, hi = rs.length - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (rs[m].t < t) lo = m + 1; else hi = m; }
+  const best = lo > 0 && Math.abs(rs[lo - 1].t - t) < Math.abs(rs[lo].t - t) ? rs[lo - 1] : rs[lo];
+  return Math.abs(best.t - t) <= 3 ? best : null;
 }

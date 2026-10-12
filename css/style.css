@@ -82,3 +82,17 @@ dialog::backdrop { background: rgb(0 0 0 / .4); }
 .settings-form { padding: 18px; display: grid; gap: 10px; }
 .foot { color: var(--muted); font-size: 12px; text-align: center; padding: 24px 0 40px; }
 .foot a { color: var(--accent); }
+.sync { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
+.sync-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.sync-head h3 { margin: 0; }
+.pill { font-size: 11px; border-radius: 999px; padding: 2px 8px; background: var(--bg); color: var(--muted); white-space: nowrap; }
+.pill.ok { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.pill.warn { background: var(--warn-bg); color: var(--warn-ink); }
+.sync-line { margin: 8px 0 4px; font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); font-size: 13px; }
+.nudges { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin: 8px 0; }
+.nudges button { padding: 7px 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.sync-more { margin: 6px 0; }
+.sync-more summary { cursor: pointer; font-size: 14px; color: var(--accent); }
+.stats.live { margin: 6px 0; }
+.stats.live .stat { padding: 6px 8px; }

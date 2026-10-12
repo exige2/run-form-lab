@@ -55,6 +55,34 @@
           <video id="video" playsinline muted controls preload="auto"></video>
           <canvas id="overlay"></canvas>
         </div>
+
+        <div id="syncBox" class="sync hidden">
+          <div class="sync-head">
+            <h3>Garmin との時刻同期</h3>
+            <span id="syncBadge" class="pill"></span>
+          </div>
+          <p class="sync-line">動画 <b id="syncVideoNow">0:00.0</b> ＝ アクティビティ <b id="syncFitNow">—</b> <span id="syncClock" class="muted"></span></p>
+          <div id="liveStats" class="stats compact live"></div>
+          <div class="nudges" role="group" aria-label="同期の微調整">
+            <button type="button" data-d="-10">−10秒</button><button type="button" data-d="-1">−1秒</button><button type="button" data-d="-0.2">−0.2</button>
+            <button type="button" data-d="0.2">＋0.2</button><button type="button" data-d="1">＋1秒</button><button type="button" data-d="10">＋10秒</button>
+          </div>
+          <details class="sync-more">
+            <summary>目印を使って正確に合わせる</summary>
+            <p class="hint">動画を目印の瞬間で一時停止してから、対応する Garmin の時刻を選んでください。</p>
+            <div class="row">
+              <label>ラップボタンを押した瞬間に合わせる <select id="lapSelect"></select></label>
+              <button type="button" id="alignLap" class="ghost">合わせる</button>
+            </div>
+            <div class="row">
+              <label>時計に表示されている時刻に合わせる（時:分:秒）<input type="text" id="clockInput" inputmode="numeric" placeholder="例: 7:12:34"></label>
+              <button type="button" id="alignClock" class="ghost">合わせる</button>
+            </div>
+            <p class="hint">おすすめは、撮影を始めたら時計のラップボタンを1回押すこと。動画でボタンを押した瞬間に止めて「ラップ」で合わせれば、ほぼ1秒以内に揃います。</p>
+            <button type="button" id="resetSync" class="ghost">自動推定に戻す</button>
+          </details>
+          <label class="check"><input type="checkbox" id="linkWindow" checked> Garmin の比較区間を動画の解析区間に連動させる</label>
+        </div>
         <div class="grid2">
           <label>解析開始（秒）<input type="number" id="segStart" min="0" step="0.1" value="0"></label>
           <label>解析終了（秒）<input type="number" id="segEnd" min="0" step="0.1" value="10"></label>

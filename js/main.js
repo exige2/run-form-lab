@@ -1,10 +1,11 @@
-import { loadFitFile, summarizeWindow } from './fit.js';
+import { loadFitFile, summarizeWindow, recordAt, formatPace } from './fit.js';
+import { getVideoCreationTime } from './videotime.js';
 import { processVideo, seek, MODEL_VARIANTS } from './pose.js';
 import { analyzeFrames, CONNECTIONS } from './metrics.js';
 import { PROVIDERS, analyzeWithAI, listModels, buildUserPrompt, renderMarkdown } from './ai.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { fit: null, fitWindow: null, videoFile: null, frames: null, result: null, keyImages: [], aiText: '' };
+const state = { fit: null, fitWindow: null, videoFile: null, videoMeta: null, sync: null, liveFitT: null, frames: null, result: null, keyImages: [], aiText: '' };
 
 // ---------- 設定（localStorage は使えない環境もあるので必ず try/catch） ----------
 const store = {
@@ -90,20 +91,40 @@ $('fitInput').addEventListener('change', async (e) => {
   ].join('');
   $('fitStart').max = Math.floor(f.durationSec);
   $('fitInfo').classList.remove('hidden');
-  trySyncVideoToFit();
+  const clock = (t) => new Date(f.startTime.getTime() + t * 1000).toLocaleTimeString('ja-JP');
+  $('lapSelect').innerHTML = f.laps.length
+    ? f.laps.map((l, i) => `<option value="${i}">ラップ${l.index} 開始（${fmtTime(l.t)}・${clock(l.t)}）</option>`).join('')
+    : '<option value="">ラップ情報がありません</option>';
+  state.sync = null;
+  maybeAutoSync();
   updateFitWindow();
 });
 $('fitStart').addEventListener('input', updateFitWindow);
 $('fitWindowLen').addEventListener('change', updateFitWindow);
 
-function updateFitWindow() {
-  const f = state.fit; if (!f) return;
+// 比較に使う Garmin の区間。同期済みかつ連動 ON なら、動画の解析区間をそのまま Garmin の時刻に写す
+function currentWindow() {
+  const f = state.fit, s = state.sync;
+  if ($('linkWindow').checked && s?.offset != null && state.videoFile && video.duration) {
+    const a = s.offset + (Number($('segStart').value) || 0);
+    const b = s.offset + (Number($('segEnd').value) || video.duration);
+    return { from: Math.max(0, a), to: Math.min(f.durationSec, b), linked: true };
+  }
   const len = Number($('fitWindowLen').value);
   const from = len ? Number($('fitStart').value) : 0;
-  const to = len ? from + len : Infinity;
-  $('fitStart').disabled = !len;
-  $('fitStartLabel').textContent = len ? `${fmtTime(from)} 〜 ${fmtTime(Math.min(to, f.durationSec))}` : '全体';
-  const w = summarizeWindow(f, from, to);
+  return { from, to: len ? from + len : Infinity, linked: false };
+}
+
+function updateFitWindow() {
+  const f = state.fit; if (!f) return;
+  const { from, to, linked } = currentWindow();
+  $('fitStart').disabled = linked || !Number($('fitWindowLen').value);
+  $('fitWindowLen').disabled = linked;
+  if (linked) $('fitStart').value = Math.floor(from);
+  $('fitStartLabel').textContent = linked
+    ? `${fmtTime(from)} 〜 ${fmtTime(to)}（動画の解析区間に連動）`
+    : Number($('fitWindowLen').value) ? `${fmtTime(from)} 〜 ${fmtTime(Math.min(to, f.durationSec))}` : '全体';
+  const w = to > from ? summarizeWindow(f, from, to) : null;
   state.fitWindow = w;
   $('fitWindowStats').innerHTML = w ? [
     statHtml('ペース', w.pacePerKm, '/km'), statHtml('心拍', w.heartRate, 'bpm'), statHtml('ケイデンス', w.cadenceSpm, 'spm'),
@@ -114,7 +135,7 @@ function updateFitWindow() {
   refreshPayload();
 }
 
-function drawFitChart(from, to) {
+function drawFitChart(from = currentWindow().from, to = currentWindow().to) {
   const c = $('fitChart'), f = state.fit, dpr = window.devicePixelRatio || 1;
   const W = c.clientWidth, H = 140;
   c.width = W * dpr; c.height = H * dpr;
@@ -123,6 +144,9 @@ function drawFitChart(from, to) {
   const dur = f.durationSec || 1, x = (t) => (t / dur) * W;
   ctx.fillStyle = css.getPropertyValue('--line');
   ctx.fillRect(x(from), 0, Math.max(2, x(Math.min(to, dur)) - x(from)), H);
+  if (state.liveFitT != null && state.liveFitT >= 0 && state.liveFitT <= dur) {
+    ctx.fillStyle = css.getPropertyValue('--text'); ctx.fillRect(x(state.liveFitT) - 1, 0, 2, H);
+  }
   const series = [
     { key: 'speed', color: css.getPropertyValue('--accent'), label: 'スピード' },
     { key: 'spm', color: css.getPropertyValue('--right'), label: 'ケイデンス' },
@@ -143,18 +167,116 @@ function drawFitChart(from, to) {
   });
 }
 
-// 動画ファイルの更新日時（多くのスマホでは撮影終了時刻）から、アクティビティ内の位置を推定
-function trySyncVideoToFit() {
-  const f = state.fit, file = state.videoFile, v = $('video');
-  if (!f || !file || !v.duration) return;
-  const startMs = file.lastModified - v.duration * 1000;
-  const offset = (startMs - f.startTime.getTime()) / 1000 + Number($('segStart').value || 0);
-  if (offset >= 0 && offset <= f.durationSec) {
-    $('fitStart').value = Math.floor(offset);
-    $('fitWindowLen').value = '30';
-    updateFitWindow();
+// ---------- Garmin と動画の時刻同期 ----------
+// state.sync.offset: 「アクティビティ開始からの秒 = offset + 動画の再生位置（秒）」となる値
+const SYNC_LABEL = { auto: '自動推定', lap: 'ラップで同期', clock: '時刻で同期', manual: '手動で調整', none: '未同期' };
+
+function computeAutoSync() {
+  const f = state.fit, file = state.videoFile;
+  if (!f || !file || !video.duration) return null;
+  const t0 = f.startTime.getTime(), dur = video.duration;
+  const inRange = (o) => o > -dur && o < f.durationSec;
+  const cands = [];
+  if (state.videoMeta) cands.push({ ms: state.videoMeta.date.getTime(), source: state.videoMeta.source });
+  cands.push({ ms: file.lastModified - dur * 1000, source: 'ファイルの更新日時（撮影終了時刻とみなして推定）' });
+  // 現地時刻を UTC として書き込むカメラ（アクションカム等）向けの時差補正
+  const tz = new Date(t0).getTimezoneOffset() * 60;
+  for (const c of cands) {
+    const o = (c.ms - t0) / 1000;
+    if (inRange(o)) return { offset: o, method: 'auto', source: c.source };
+    if (tz && inRange(o + tz)) return { offset: o + tz, method: 'auto', source: c.source + '・時差を補正' };
   }
+  return { offset: null, method: 'none', source: '動画の撮影時刻がアクティビティの時間帯と重なりませんでした。目印を使って合わせてください。' };
 }
+
+function maybeAutoSync() {
+  if (!state.fit || !state.videoFile || !video.duration) { renderSync(); return; }
+  if (!state.sync || state.sync.method === 'auto' || state.sync.method === 'none') applySync(computeAutoSync());
+  else renderSync();
+}
+
+function applySync(sync) {
+  state.sync = sync;
+  renderSync();
+  updateFitWindow();
+}
+
+function renderSync() {
+  const box = $('syncBox');
+  if (!state.fit || !state.videoFile) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const s = state.sync, badge = $('syncBadge');
+  const method = s?.offset == null ? 'none' : s.method;
+  badge.textContent = SYNC_LABEL[method];
+  badge.className = 'pill ' + (method === 'none' ? 'warn' : method === 'auto' ? '' : 'ok');
+  badge.title = s?.source || '';
+  updateLive();
+}
+
+function fmtSec1(sec) {
+  const m = Math.floor(sec / 60), s = sec - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+}
+
+// 再生位置に対応する Garmin の値を表示
+function updateLive() {
+  if ($('syncBox').classList.contains('hidden')) return;
+  const f = state.fit, s = state.sync, vt = video.currentTime || 0;
+  $('syncVideoNow').textContent = fmtSec1(vt);
+  if (s?.offset == null) {
+    state.liveFitT = null;
+    $('syncFitNow').textContent = '—';
+    $('syncClock').textContent = '';
+    $('liveStats').innerHTML = `<p class="hint">${s?.source || '同期できていません。'}</p>`;
+    drawFitChart();
+    return;
+  }
+  const ft = s.offset + vt;
+  state.liveFitT = ft;
+  $('syncFitNow').textContent = ft < 0 ? `開始の${fmtTime(Math.ceil(-ft))}前` : fmtTime(Math.floor(ft));
+  $('syncClock').textContent = `（${new Date(f.startTime.getTime() + ft * 1000).toLocaleTimeString('ja-JP')}）`;
+  const r = recordAt(f, ft);
+  $('liveStats').innerHTML = r ? [
+    statHtml('ペース', formatPace(r.speed), '/km'),
+    statHtml('心拍', r.hr, 'bpm'),
+    statHtml('ケイデンス', r.spm != null ? Math.round(r.spm) : null, 'spm'),
+    f.available.dynamics ? statHtml('接地時間', r.gctMs != null ? Math.round(r.gctMs) : null, 'ms') : '',
+    f.available.dynamics ? statHtml('上下動', r.voMm != null ? (r.voMm / 10).toFixed(1) : null, 'cm') : '',
+  ].join('') : '<p class="hint">この時刻の Garmin データはありません（記録の範囲外）。</p>';
+  drawFitChart();
+}
+
+function nudgeSync(d) {
+  const base = state.sync?.offset ?? 0;
+  applySync({ offset: base + d, method: 'manual', source: '手動で調整' });
+}
+
+function alignToLap() {
+  const lap = state.fit?.laps?.[Number($('lapSelect').value)];
+  if (!lap) { alert('この FIT にはラップ情報がありません。'); return; }
+  applySync({ offset: lap.t - video.currentTime, method: 'lap', source: `ラップ${lap.index}の開始を動画 ${fmtSec1(video.currentTime)} に合わせました` });
+}
+
+function alignToClock() {
+  const m = $('clockInput').value.trim().match(/^(\d{1,2})[:：](\d{2})(?:[:：](\d{2}))?$/);
+  if (!m) { alert('時刻は 7:12:34 のように入力してください。'); return; }
+  const t0 = state.fit.startTime.getTime();
+  // アクティビティ開始日の前後で、開始時刻に最も近い日付を採用
+  let best = null;
+  for (const dayShift of [-1, 0, 1]) {
+    const d = new Date(t0);
+    d.setDate(d.getDate() + dayShift);
+    d.setHours(Number(m[1]), Number(m[2]), Number(m[3] || 0), 0);
+    if (!best || Math.abs(d - t0) < Math.abs(best - t0)) best = d;
+  }
+  applySync({ offset: (best.getTime() - t0) / 1000 - video.currentTime, method: 'clock', source: `時計の ${m[0]} を動画 ${fmtSec1(video.currentTime)} に合わせました` });
+}
+
+document.querySelectorAll('.nudges button').forEach((b) => b.addEventListener('click', () => nudgeSync(Number(b.dataset.d))));
+$('alignLap').addEventListener('click', alignToLap);
+$('alignClock').addEventListener('click', alignToClock);
+$('resetSync').addEventListener('click', () => applySync(computeAutoSync()));
+$('linkWindow').addEventListener('change', updateFitWindow);
 
 // ---------- 動画 ----------
 const video = $('video'), overlay = $('overlay');
@@ -166,7 +288,8 @@ $('height').addEventListener('change', () => store.set('height', $('height').val
 
 $('videoInput').addEventListener('change', (e) => {
   const file = e.target.files[0]; if (!file) return;
-  state.videoFile = file; state.frames = null; state.result = null;
+  state.videoFile = file; state.frames = null; state.result = null; state.sync = null; state.videoMeta = null;
+  getVideoCreationTime(file).then((meta) => { if (state.videoFile === file) { state.videoMeta = meta; maybeAutoSync(); } });
   if (video.src) URL.revokeObjectURL(video.src);
   video.src = URL.createObjectURL(file);
   $('videoBox').classList.remove('hidden');
@@ -182,7 +305,8 @@ video.addEventListener('loadedmetadata', () => {
   $('segEnd').value = Math.min(video.duration, 10).toFixed(1);
   $('segStart').max = $('segEnd').max = video.duration.toFixed(1);
   if (video.duration > 30) alert('長い動画です。解析は指定区間（最大30秒まで）に限定されます。');
-  trySyncVideoToFit();
+  maybeAutoSync();
+  startOverlayLoop();
 });
 
 function drawPose(ctx, lm, scale = 1) {
@@ -216,14 +340,34 @@ function paintOverlay() {
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   const f = nearestFrame(video.currentTime);
   if (f) drawPose(ctx, f.lm, 1);
+  drawHud(ctx);
 }
+// 動画の左上に、同期した Garmin の値を表示
+function drawHud(ctx) {
+  const s = state.sync;
+  if (!state.fit || s?.offset == null) return;
+  const r = recordAt(state.fit, s.offset + video.currentTime);
+  if (!r) return;
+  const parts = [r.hr && `♥ ${r.hr}`, formatPace(r.speed) && `${formatPace(r.speed)}/km`, r.spm && `${Math.round(r.spm)} spm`, r.gctMs && `GCT ${Math.round(r.gctMs)}ms`].filter(Boolean);
+  if (!parts.length) return;
+  const fs = Math.max(14, Math.round(overlay.width / 42));
+  ctx.font = `600 ${fs}px system-ui`;
+  const text = parts.join('   ');
+  const w = ctx.measureText(text).width + fs;
+  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(fs / 2, fs / 2, w, fs * 1.7);
+  ctx.fillStyle = '#fff'; ctx.fillText(text, fs, fs * 1.75);
+}
+let overlayRunning = false;
 function overlayLoop() {
   paintOverlay();
   if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(overlayLoop);
   else requestAnimationFrame(overlayLoop);
 }
-video.addEventListener('seeked', paintOverlay);
-$('segStart').addEventListener('change', trySyncVideoToFit);
+function startOverlayLoop() { if (!overlayRunning) { overlayRunning = true; overlayLoop(); } }
+video.addEventListener('seeked', () => { paintOverlay(); updateLive(); });
+video.addEventListener('timeupdate', updateLive);
+$('segStart').addEventListener('change', updateFitWindow);
+$('segEnd').addEventListener('change', updateFitWindow);
 
 let abortCtl = null;
 $('runPose').addEventListener('click', async () => {
@@ -248,7 +392,7 @@ $('runPose').addEventListener('click', async () => {
     setProg(1, 'キーフレームを作成中…');
     await captureKeyframes();
     renderResult();
-    overlayLoop();
+    startOverlayLoop();
     await seek(video, start);
     setProg(1, '完了');
     $('secResult').scrollIntoView({ behavior: 'smooth' });
@@ -281,7 +425,13 @@ async function captureKeyframes() {
 // ---------- 結果表示 ----------
 function renderResult() {
   const r = state.result;
-  $('warnings').innerHTML = r.warnings.map((w) => `<li>${w}</li>`).join('');
+  const warns = [...r.warnings];
+  const fw = state.fitWindow;
+  if (state.sync?.offset != null && fw?.cadenceSpm && r.cadenceSpm && Math.abs(fw.cadenceSpm - r.cadenceSpm) > 8) {
+    warns.push(`動画のケイデンス（${r.cadenceSpm}）と Garmin の同じ区間（${fw.cadenceSpm}）が離れています。同期がずれているか、区間内でペースが変わっている可能性があります。`);
+  }
+  if (state.fit && state.sync?.offset == null) warns.push('Garmin と動画の時刻が同期できていないため、比較は手動で選んだ区間で行っています。');
+  $('warnings').innerHTML = warns.map((w) => `<li>${w}</li>`).join('');
   const near = r[r.meta.nearSide];
   $('metricCards').innerHTML = [
     statHtml('ケイデンス（動画）', r.cadenceSpm, 'spm'),
@@ -313,7 +463,12 @@ function buildPayload() {
   const heightCm = Number($('height').value) || null;
   return buildUserPrompt({
     video: state.result,
-    fitWindow: state.fitWindow,
+    fitWindow: state.fitWindow && {
+      ...state.fitWindow,
+      sync: state.sync?.offset != null
+        ? { method: SYNC_LABEL[state.sync.method], linkedToVideoSegment: $('linkWindow').checked }
+        : { method: '未同期（手動で選んだ区間）' },
+    },
     fitMeta: state.fit ? { sport: state.fit.sport, subSport: state.fit.subSport, available: state.fit.available } : null,
     runner: heightCm ? { heightCm } : {},
   });
