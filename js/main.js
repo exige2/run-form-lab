@@ -484,7 +484,7 @@ $('runAI').addEventListener('click', async () => {
   $('runAI').disabled = true;
   $('aiStatus').textContent = `${PROVIDERS[ai.provider].label} に問い合わせ中…`;
   try {
-    const text = await analyzeWithAI({ ...ai, userPrompt: buildPayload(), images: state.keyImages });
+    const text = await analyzeWithAI({ ...ai, userPrompt: buildPayload(), images: state.keyImages, onStatus: (m) => { $('aiStatus').textContent = m; } });
     state.aiText = text;
     $('aiResult').innerHTML = renderMarkdown(text);
     $('aiStatus').textContent = `${ai.model} による解説`;

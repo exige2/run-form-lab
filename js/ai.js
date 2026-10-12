@@ -32,6 +32,7 @@ const SYSTEM_PROMPT = `あなたは経験豊富なランニングコーチ兼バ
 - 根拠の数値を必ず引用する。数値が null の項目は計測できなかったものとして扱い、推測で埋めない。
 - 医学的な診断やケガの断定はしない。痛みがある場合は専門家（医師・理学療法士）への相談を勧める一文を入れる。
 - 一般論の羅列ではなく、このランナーの数値に基づいた優先度の高い指摘に絞る。
+- 全体で日本語 2,000 字程度までに収める（長くなりすぎないこと）。
 
 指標の読み方の目安（個人差・ペース依存が大きいので参考程度）:
 - overstridePctLeg: 接地時に足首が骨盤中心より前にある距離（脚長比%）。大きいほどブレーキがかかりやすい。
@@ -79,29 +80,36 @@ async function readError(res) {
   return new Error(msg);
 }
 
-// images: [{ base64, mime }]
-export async function analyzeWithAI({ provider, apiKey, model, userPrompt, images = [], signal }) {
-  if (!apiKey) throw new Error('API キーが設定されていません。');
-  model = model || PROVIDERS[provider].defaultModel;
+// 出力トークンの上限。日本語の長文は上限に当たりやすいので余裕を持たせ、それでも切れたら続きを取得する
+const MAX_OUTPUT = 8192;
+const MAX_CONTINUATIONS = 2;
+const CONTINUE_PROMPT = '出力が途中で切れました。直前の文の続きから、重複せずに最後まで出力してください。前置きは不要です。';
 
+// 1回分の呼び出し。history は最初のユーザーメッセージの後に続く会話（続きの取得用）
+async function callOnce({ provider, apiKey, model, userPrompt, images, signal, history }) {
   if (provider === 'gemini') {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST', signal,
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: 'user', parts: [
-          ...images.map((im) => ({ inlineData: { mimeType: im.mime, data: im.base64 } })),
-          { text: userPrompt },
-        ] }],
-        generationConfig: { temperature: 0.4, maxOutputTokens: 8192 },
+        contents: [
+          { role: 'user', parts: [
+            ...images.map((im) => ({ inlineData: { mimeType: im.mime, data: im.base64 } })),
+            { text: userPrompt },
+          ] },
+          ...history.map((h) => ({ role: h.role === 'assistant' ? 'model' : 'user', parts: [{ text: h.text }] })),
+        ],
+        // 思考型モデルは思考にもトークンを使うため、上限を大きめにする
+        generationConfig: { temperature: 0.4, maxOutputTokens: MAX_OUTPUT * 2 },
       }),
     });
     if (!res.ok) throw await readError(res);
     const j = await res.json();
-    const text = j.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
-    if (!text) throw new Error('応答が空でした（安全フィルタやトークン上限の可能性）。');
-    return text;
+    const c = j.candidates?.[0];
+    const text = c?.content?.parts?.filter((p) => !p.thought).map((p) => p.text || '').join('') || '';
+    if (!text && !history.length) throw new Error('応答が空でした（安全フィルタやトークン上限の可能性）。');
+    return { text, truncated: c?.finishReason === 'MAX_TOKENS' };
   }
 
   if (provider === 'anthropic') {
@@ -114,16 +122,22 @@ export async function analyzeWithAI({ provider, apiKey, model, userPrompt, image
         'anthropic-dangerous-direct-browser-access': 'true', // BYOK でブラウザから直接呼ぶために必要
       },
       body: JSON.stringify({
-        model, max_tokens: 4096, system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: [
-          ...images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: im.mime, data: im.base64 } })),
-          { type: 'text', text: userPrompt },
-        ] }],
+        model, max_tokens: MAX_OUTPUT, system: SYSTEM_PROMPT,
+        messages: [
+          { role: 'user', content: [
+            ...images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: im.mime, data: im.base64 } })),
+            { type: 'text', text: userPrompt },
+          ] },
+          ...history.map((h) => ({ role: h.role, content: h.text })),
+        ],
       }),
     });
     if (!res.ok) throw await readError(res);
     const j = await res.json();
-    return j.content?.filter((c) => c.type === 'text').map((c) => c.text).join('') || '';
+    return {
+      text: j.content?.filter((c) => c.type === 'text').map((c) => c.text).join('') || '',
+      truncated: j.stop_reason === 'max_tokens',
+    };
   }
 
   if (provider === 'openai') {
@@ -132,21 +146,41 @@ export async function analyzeWithAI({ provider, apiKey, model, userPrompt, image
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
+        max_completion_tokens: MAX_OUTPUT * 2,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: [
             { type: 'text', text: userPrompt },
             ...images.map((im) => ({ type: 'image_url', image_url: { url: `data:${im.mime};base64,${im.base64}` } })),
           ] },
+          ...history.map((h) => ({ role: h.role, content: h.text })),
         ],
       }),
     });
     if (!res.ok) throw await readError(res);
     const j = await res.json();
-    return j.choices?.[0]?.message?.content || '';
+    const ch = j.choices?.[0];
+    return { text: ch?.message?.content || '', truncated: ch?.finish_reason === 'length' };
   }
 
   throw new Error('未対応のプロバイダです: ' + provider);
+}
+
+// images: [{ base64, mime }]
+// 戻り値は解説の Markdown。上限で切れた場合は自動で続きを取得してつなげる
+export async function analyzeWithAI({ provider, apiKey, model, userPrompt, images = [], signal, onStatus }) {
+  if (!apiKey) throw new Error('API キーが設定されていません。');
+  model = model || PROVIDERS[provider].defaultModel;
+  let full = '';
+  let history = [];
+  for (let i = 0; i <= MAX_CONTINUATIONS; i++) {
+    if (i > 0) onStatus?.(`出力が長いため続きを取得中…（${i}/${MAX_CONTINUATIONS}）`);
+    const { text, truncated } = await callOnce({ provider, apiKey, model, userPrompt, images, signal, history });
+    full += text;
+    if (!truncated) return full;
+    history = [{ role: 'assistant', text: full }, { role: 'user', text: CONTINUE_PROMPT }];
+  }
+  return full + '\n\n（※ 出力が長すぎたため、途中で打ち切りました。）';
 }
 
 // 使えるモデル名の一覧を取得（モデル名は頻繁に変わるため、ハードコードせず選べるようにする）
