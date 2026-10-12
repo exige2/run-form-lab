@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>プライバシーと利用上の注意 — Run Form Lab</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar"><div class="brand"><a href="./" style="color:inherit;text-decoration:none">Run Form Lab</a></div></header>
+  <main>
+    <section class="card">
+      <h2>プライバシーについて</h2>
+      <h3>動画</h3>
+      <p>選択した動画は、お使いの端末のブラウザ内でのみ処理されます。動画ファイルを本サイトや第三者のサーバーへ送信・保存することはありません。</p>
+      <h3>Garmin のデータ</h3>
+      <p>FIT ファイルもブラウザ内で読み込み・集計します。本サイトのサーバーには送信しません。</p>
+      <h3>AI 解説を使う場合</h3>
+      <p>「AI に解説してもらう」を押したときに限り、解析した数値（ペース・心拍・フォーム指標など）、入力した身長、骨格を重ねた代表フレーム画像（2〜3 枚）を、設定画面で選んだ AI 事業者（Google、Anthropic、OpenAI のいずれか）へ、あなたのブラウザから直接送信します。送信内容は送信前に画面で確認できます。送信されたデータの取り扱いは各事業者の規約に従います。無料枠では入力データがサービス改善に使われる場合があります。</p>
+      <h3>API キー</h3>
+      <p>API キーは既定ではページを閉じると消えます。「この端末に保存する」を選んだ場合のみブラウザ（localStorage）に保存され、本サイトのサーバーには送信されません。共用端末では保存しないでください。</p>
+      <h3>外部への通信（送信先と目的）</h3>
+      <ul>
+        <li>cdn.jsdelivr.net — 解析用ライブラリ（MediaPipe、Garmin FIT SDK 等）の読み込み</li>
+        <li>storage.googleapis.com — 骨格推定モデルの読み込み</li>
+        <li>odml.pa.googleapis.com — MediaPipe ライブラリが送ろうとする利用ログ（本サイトではセキュリティヘッダでブロックしています）</li>
+        <li>generativelanguage.googleapis.com / api.anthropic.com / api.openai.com — AI 解説（利用時のみ）</li>
+      </ul>
+      <p>これらの通信では、一般的な Web 通信と同様に IP アドレスやブラウザ情報が各事業者に送られます。本サイトはアクセス解析ツールを使用していません。</p>
+    </section>
+    <section class="card">
+      <h2>利用上の注意</h2>
+      <ul>
+        <li>解析結果は 2D 動画からの推定値で、撮影角度や骨格推定の誤差を含みます。</li>
+        <li>本サービスは医療機器ではなく、医学的な診断・治療を目的としたものではありません。痛みや違和感がある場合は医師や理学療法士にご相談ください。</li>
+        <li>他人が映った動画を使う場合は、本人の同意を得てください。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
