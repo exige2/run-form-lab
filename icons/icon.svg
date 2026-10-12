@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0f7b5f"/>
+  <path d="M104 438H408" stroke="#ffffff" stroke-opacity=".28" stroke-width="14" stroke-linecap="round"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="30">
+    <!-- 奥側の手足 -->
+    <path d="M286 186L232 236L204 292" stroke="#ffffff" stroke-opacity=".55"/>
+    <path d="M250 300L206 374L136 392" stroke="#ffffff" stroke-opacity=".55"/>
+    <!-- 体幹と手前の手足 -->
+    <path d="M286 186L250 300" stroke="#ffffff"/>
+    <path d="M286 186L328 246L376 214" stroke="#ffffff"/>
+    <path d="M250 300L328 348L306 426" stroke="#ffffff"/>
+  </g>
+  <circle cx="310" cy="122" r="42" fill="#ffffff"/>
+  <!-- 関節（骨格推定のキーポイント） -->
+  <g fill="#ffb347">
+    <circle cx="286" cy="186" r="15"/><circle cx="250" cy="300" r="15"/>
+    <circle cx="328" cy="348" r="15"/><circle cx="306" cy="426" r="15"/>
+    <circle cx="328" cy="246" r="13"/><circle cx="206" cy="374" r="13"/>
+  </g>
+</svg>
